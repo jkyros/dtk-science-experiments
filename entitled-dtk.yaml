@@ -1,0 +1,82 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: dtk
+spec: {}
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  annotations:
+  labels:
+    build: entitled-dtk
+  name: entitled-dtk
+spec:
+  failedBuildsHistoryLimit: 5
+  nodeSelector: null
+  output:
+    to:
+      kind: ImageStreamTag
+      name: dtk:latest
+  postCommit: {}
+  resources: {}
+  runPolicy: Serial
+  source:
+    dockerfile: "FROM registry.ci.openshift.org/ocp/4.13:base\nARG KERNEL_VERSION=''\nARG
+      RT_KERNEL_VERSION=''\nARG RHEL_VERSION=''\n\n#Clean out host rhsm otherwise
+      it will prefer it \nRUN rm /etc/rhsm-host\n#Clean out the ubi and local/internal
+      repos we start with\nRUN rm /etc/yum.repos.d/* \n#Wake up rhsm and have it give
+      us some repos\nRUN yum repolist\n#Make sure we're pegged to the right version
+      \ \nRUN echo ${RHEL_VERSION} > /etc/yum/vars/releasever && yum config-manager
+      --best --setopt=install_weak_deps=False --save\n#Enable the proper channels
+      for our release\nRUN dnf config-manager --set-enabled rhel-8-for-x86_64-baseos-eus-rpms
+      \nRUN dnf config-manager --set-enabled rhel-8-for-x86_64-rt-rpms \nRUN dnf config-manager
+      --set-enabled rhocp-4.12-for-rhel-8-x86_64-rpms \n\nRUN echo ${RHEL_VERSION}
+      > /etc/yum/vars/releasever \\\n    && yum config-manager --best --setopt=install_weak_deps=False
+      --save\n\n# kernel packages needed to build drivers / kmods \nRUN yum -y install
+      \\\n    kernel-core${KERNEL_VERSION:+-}${KERNEL_VERSION} \\\n    kernel-devel${KERNEL_VERSION:+-}${KERNEL_VERSION}
+      \\\n    kernel-headers${KERNEL_VERSION:+-}${KERNEL_VERSION} \\\n    kernel-modules${KERNEL_VERSION:+-}${KERNEL_VERSION}
+      \\\n    kernel-modules-extra${KERNEL_VERSION:+-}${KERNEL_VERSION} \\\n    &&
+      yum clean all\n\n# real-time kernel packages\nRUN if [ $(arch) = x86_64 ]; then
+      \\\n    yum -y install \\\n    kernel-rt-core${RT_KERNEL_VERSION:+-}${RT_KERNEL_VERSION}
+      \\\n    kernel-rt-devel${RT_KERNEL_VERSION:+-}${RT_KERNEL_VERSION} \\\n    kernel-rt-modules${RT_KERNEL_VERSION:+-}${RT_KERNEL_VERSION}
+      \\\n    kernel-rt-modules-extra${RT_KERNEL_VERSION:+-}${RT_KERNEL_VERSION} \\\n
+      \   && yum clean all ; fi\n\nRUN yum -y install kernel-rpm-macros\n\n# Additional
+      packages that are mandatory for driver-containers\nRUN yum -y install elfutils-libelf-devel
+      kmod binutils kabi-dw kernel-abi-whitelists \\\n    && yum clean all\n    \n#
+      Find and install the GCC version used to compile the kernel\n# If it cannot
+      be found (fails on some architecutres), install the default gcc\nRUN export
+      INSTALLED_KERNEL=$(rpm -q --qf \"%{VERSION}-%{RELEASE}.%{ARCH}\"  kernel-core)
+      \\\n&& GCC_VERSION=$(cat /lib/modules/${INSTALLED_KERNEL}/config | grep -Eo
+      \"Compiler: gcc \\(GCC\\) ([0-9\\.]+)\" | grep -Eo \"([0-9\\.]+)\") \\\n&& yum
+      -y install gcc-${GCC_VERSION} \\\n|| yum -y install gcc && \\\nyum clean all\n\n#
+      Additional packages that are needed for a subset (e.g DPDK) of driver-containers\nRUN
+      yum -y install xz diffutils flex bison \\\n    && yum clean all\n    \n# Packages
+      needed to build driver-containers\nRUN yum -y install git make rpm-build \\\n
+      \   && yum clean all\n\n# Packages needed to sign and run externally build kernel
+      modules\nRUN if [ $(arch) == \"x86_64\" ] || [ $(arch) == \"aarch64\" ]; then
+      \\\n    ARCH_DEP_PKGS=\"mokutil\"; fi \\\n    && yum -y install openssl keyutils
+      $ARCH_DEP_PKGS \\\n    && yum clean all\n\n#COPY manifests /manifests\nRUN mkdir /manifests && wget -P /manifests https://raw.githubusercontent.com/openshift/driver-toolkit/master/manifests/01-openshift-imagestream.yaml && wget -P /manifests https://raw.githubusercontent.com/openshift/driver-toolkit/master/manifests/image-references\nLABEL
+      io.k8s.description=\"driver-toolkit is a container with the kernel packages
+      necessary for building driver containers for deploying kernel modules/drivers
+      on OpenShift\" \\\n      name=\"driver-toolkit\" \\\n      io.openshift.release.operator=true
+      \\\n      version=\"0.1\"\n\n# Last layer for metadata for mapping the driver-toolkit
+      to a specific kernel version\nRUN export INSTALLED_KERNEL=$(rpm -q --qf \"%{VERSION}-%{RELEASE}.%{ARCH}\"
+      \ kernel-core); \\\n    export INSTALLED_RT_KERNEL=$(rpm -q --qf \"%{VERSION}-%{RELEASE}.%{ARCH}\"
+      \ kernel-rt-core); \\\n    echo \"{ \\\"KERNEL_VERSION\\\": \\\"${INSTALLED_KERNEL}\\\",
+      \\\"RT_KERNEL_VERSION\\\": \\\"${INSTALLED_RT_KERNEL}\\\", \\\"RHEL_VERSION\\\":
+      \\\"${RHEL_VERSION}\\\" }\" > /etc/driver-toolkit-release.json\n\n"
+    type: Dockerfile
+  strategy:
+    dockerStrategy:
+      volumes:
+      - mounts:
+        - destinationPath: /etc/pki/entitlement
+        name: etc-pki-entitlement
+        source:
+          secret:
+            secretName: etc-pki-entitlement
+          type: Secret
+    type: Docker
+  successfulBuildsHistoryLimit: 5
